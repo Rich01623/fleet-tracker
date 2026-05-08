@@ -12,9 +12,11 @@
         .overlay { 
             position: absolute; top: 10px; right: 10px; z-index: 1000; 
             background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+            max-width: 200px;
         }
         h2 { margin: 0 0 5px 0; font-size: 16px; color: #E62411; }
         .status { font-size: 12px; color: #666; }
+        .info-box { margin-top: 10px; font-size: 13px; border-top: 1px solid #eee; pt: 5px; }
     </style>
 </head>
 <body>
@@ -22,6 +24,7 @@
     <div class="overlay">
         <h2>Frost Fleet Live</h2>
         <div id="lastUpdate" class="status">Connecting...</div>
+        <div id="routeInfo" class="info-box">Click a driver to see today's route.</div>
     </div>
     
     <div id="map"></div>
@@ -33,19 +36,67 @@
         const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
         // --- INIT MAP ---
-        // Centers on Warsop area by default
         const map = L.map('map').setView([53.21, -1.11], 10); 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
 
         let markers = {};
+        let currentRouteLayer = L.layerGroup().addTo(map);
 
-        // --- FETCH DATA ---
+        // --- CORE FUNCTIONS ---
+
+        async function fetchDriverRoute(driverName) {
+            currentRouteLayer.clearLayers();
+            const startOfDay = new Date();
+            startOfDay.setHours(0, 0, 1, 0); // 00:01 AM today
+
+            const { data, error } = await _supabase
+                .from('vehicle_tracking')
+                .select('*')
+                .eq('driver_name', driverName)
+                .gte('created_at', startOfDay.toISOString())
+                .order('created_at', { ascending: true });
+
+            if (error || !data.length) return;
+
+            let totalMeters = 0;
+            let pathPoints = [];
+
+            for (let i = 0; i < data.length; i++) {
+                const current = data[i];
+                const [lat, lon] = current.coordinates.split(',').map(Number);
+                const currentLatLng = L.latLng(lat, lon);
+                pathPoints.push(currentLatLng);
+
+                if (i > 0) {
+                    const prev = data[i-1];
+                    const [pLat, pLon] = prev.coordinates.split(',').map(Number);
+                    const prevLatLng = L.latLng(pLat, pLon);
+                    
+                    const dist = prevLatLng.distanceTo(currentLatLng); // Distance in meters
+                    const timeDiff = (new Date(current.created_at) - new Date(prev.created_at)) / 1000 / 60; // Minutes
+
+                    totalMeters += dist;
+
+                    // Logic: Stationary if moved < 25m but took > 15 mins
+                    const color = (dist < 25 && timeDiff > 15) ? '#ff0000' : '#3388ff';
+                    const weight = (dist < 25 && timeDiff > 15) ? 6 : 4;
+
+                    L.polyline([prevLatLng, currentLatLng], { color: color, weight: weight }).addTo(currentRouteLayer);
+                }
+            }
+
+            const mileage = (totalMeters * 0.000621371).toFixed(2);
+            document.getElementById('routeInfo').innerHTML = `
+                <b>${driverName.toUpperCase()}</b><br>
+                Today's Distance: ${mileage} miles<br>
+                <small>(Red = Stationary > 15m)</small>
+            `;
+        }
+
         async function updateLiveLocations() {
             try {
-                // Fetch only the latest entry for each driver
-                // This logic groups by driver and finds the most recent ping
                 const { data, error } = await _supabase
                     .from('vehicle_tracking')
                     .select('*')
@@ -53,7 +104,6 @@
 
                 if (error) throw error;
 
-                // We only want the newest record for each unique driver
                 const latestPositions = {};
                 data.forEach(row => {
                     if (!latestPositions[row.driver_name]) {
@@ -61,24 +111,30 @@
                     }
                 });
 
-                // Update Map
                 Object.values(latestPositions).forEach(pos => {
                     const [lat, lon] = pos.coordinates.split(',').map(Number);
                     const name = pos.driver_name.toUpperCase();
                     const time = new Date(pos.created_at).toLocaleTimeString();
-                    const info = `<b>Driver: ${name}</b><br>Speed: ${pos.speed} MPH<br>Last Update: ${time}`;
+                    const info = `
+                        <b>Driver: ${name}</b><br>
+                        <b>Current Speed: ${pos.speed} MPH</b><br>
+                        Last Update: ${time}<br>
+                        <hr>
+                        <i>Click to view today's route</i>`;
 
                     if (markers[name]) {
                         markers[name].setLatLng([lat, lon]).setPopupContent(info);
                     } else {
                         markers[name] = L.marker([lat, lon]).addTo(map).bindPopup(info);
+                        // Add click listener for route
+                        markers[name].on('click', () => fetchDriverRoute(pos.driver_name));
                     }
                 });
 
                 document.getElementById('lastUpdate').innerText = "Last sync: " + new Date().toLocaleTimeString();
             } catch (e) {
                 console.error("Map Error:", e);
-                document.getElementById('lastUpdate').innerText = "Sync Failed: Check RLS";
+                document.getElementById('lastUpdate').innerText = "Sync Failed";
             }
         }
 
