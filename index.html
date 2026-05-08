@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Frost Fleet Live Tracker</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        .overlay { 
+            position: absolute; top: 10px; right: 10px; z-index: 1000; 
+            background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        h2 { margin: 0 0 5px 0; font-size: 16px; color: #E62411; }
+        .status { font-size: 12px; color: #666; }
+    </style>
+</head>
+<body>
+
+    <div class="overlay">
+        <h2>Frost Fleet Live</h2>
+        <div id="lastUpdate" class="status">Connecting...</div>
+    </div>
+    
+    <div id="map"></div>
+
+    <script>
+        // --- CONFIG ---
+        const SUPABASE_URL = "https://mbudwnwxucluwgbkgbfx.supabase.co"; 
+        const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1idWR3bnd4dWNsdXdnYmtnYmZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyMDQwMjYsImV4cCI6MjA5MDc4MDAyNn0.xFv-FiQ894vdfJuQYWQyF4WzQXmlnmnKvz_c8nuzl5Q"; 
+        const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // --- INIT MAP ---
+        // Centers on Warsop area by default
+        const map = L.map('map').setView([53.21, -1.11], 10); 
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        let markers = {};
+
+        // --- FETCH DATA ---
+        async function updateLiveLocations() {
+            try {
+                // Fetch only the latest entry for each driver
+                // This logic groups by driver and finds the most recent ping
+                const { data, error } = await _supabase
+                    .from('vehicle_tracking')
+                    .select('*')
+                    .order('created_at', { ascending: false });
+
+                if (error) throw error;
+
+                // We only want the newest record for each unique driver
+                const latestPositions = {};
+                data.forEach(row => {
+                    if (!latestPositions[row.driver_name]) {
+                        latestPositions[row.driver_name] = row;
+                    }
+                });
+
+                // Update Map
+                Object.values(latestPositions).forEach(pos => {
+                    const [lat, lon] = pos.coordinates.split(',').map(Number);
+                    const name = pos.driver_name.toUpperCase();
+                    const time = new Date(pos.created_at).toLocaleTimeString();
+                    const info = `<b>Driver: ${name}</b><br>Speed: ${pos.speed} MPH<br>Last Update: ${time}`;
+
+                    if (markers[name]) {
+                        markers[name].setLatLng([lat, lon]).setPopupContent(info);
+                    } else {
+                        markers[name] = L.marker([lat, lon]).addTo(map).bindPopup(info);
+                    }
+                });
+
+                document.getElementById('lastUpdate').innerText = "Last sync: " + new Date().toLocaleTimeString();
+            } catch (e) {
+                console.error("Map Error:", e);
+                document.getElementById('lastUpdate').innerText = "Sync Failed: Check RLS";
+            }
+        }
+
+        // Run every 30 seconds
+        setInterval(updateLiveLocations, 30000);
+        updateLiveLocations();
+    </script>
+</body>
+</html>
