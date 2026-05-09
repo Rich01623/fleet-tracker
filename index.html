@@ -1,146 +1,130 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Frost Fleet Live Tracker</title>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frost Fleet - Active Drivers Map</title>
+    
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    
     <style>
-        body, html { margin: 0; padding: 0; height: 100%; font-family: sans-serif; }
-        #map { height: 100vh; width: 100%; }
-        .overlay { 
-            position: absolute; top: 10px; right: 10px; z-index: 1000; 
-            background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-            max-width: 200px;
+        body { margin: 0; padding: 0; font-family: -apple-system, sans-serif; background: #121212; color: white; }
+        #map { height: 100vh; width: 100vw; }
+        
+        .admin-panel {
+            position: absolute; top: 20px; left: 20px; z-index: 1000;
+            background: rgba(30, 30, 30, 0.9); padding: 20px;
+            border-radius: 12px; border: 1px solid #E62411;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            min-width: 220px;
         }
-        h2 { margin: 0 0 5px 0; font-size: 16px; color: #E62411; }
-        .status { font-size: 12px; color: #666; }
-        .info-box { margin-top: 10px; font-size: 13px; border-top: 1px solid #eee; pt: 5px; }
+        h1 { margin: 0 0 5px 0; font-size: 16px; color: #E62411; text-transform: uppercase; }
+        .status-box { font-size: 13px; margin: 10px 0; padding: 10px; background: #000; border-radius: 6px; border-left: 3px solid #27ae60; }
+        .driver-count { font-size: 24px; font-weight: 800; color: #fff; }
+        .update-tag { font-size: 10px; color: #666; text-transform: uppercase; }
     </style>
 </head>
 <body>
 
-    <div class="overlay">
-        <h2>Frost Fleet Live</h2>
-        <div id="lastUpdate" class="status">Connecting...</div>
-        <div id="routeInfo" class="info-box">Click a driver to see today's route.</div>
+    <div class="admin-panel">
+        <h1>Active Fleet</h1>
+        <div class="status-box">
+            <div class="driver-count" id="activeCount">0</div>
+            <div style="font-size: 11px; color: #aaa;">DRIVERS LOGGED IN</div>
+        </div>
+        <div class="update-tag">Last Sync: <span id="lastUpdate">--:--</span></div>
     </div>
-    
+
     <div id="map"></div>
 
     <script>
-        // --- CONFIG ---
         const SUPABASE_URL = "https://mbudwnwxucluwgbkgbfx.supabase.co"; 
         const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1idWR3bnd4dWNsdXdnYmtnYmZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyMDQwMjYsImV4cCI6MjA5MDc4MDAyNn0.xFv-FiQ894vdfJuQYWQyF4WzQXmlnmnKvz_c8nuzl5Q"; 
         const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-        // --- INIT MAP ---
-        const map = L.map('map').setView([53.21, -1.11], 10); 
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors'
-        }).addTo(map);
+        const map = L.map('map').setView([52.9548, -1.1581], 7);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; CARTO' }).addTo(map);
 
         let markers = {};
-        let currentRouteLayer = L.layerGroup().addTo(map);
 
-        // --- CORE FUNCTIONS ---
-
-        async function fetchDriverRoute(driverName) {
-            currentRouteLayer.clearLayers();
-            const startOfDay = new Date();
-            startOfDay.setHours(0, 0, 1, 0); // 00:01 AM today
-
-            const { data, error } = await _supabase
-                .from('vehicle_tracking')
-                .select('*')
-                .eq('driver_name', driverName)
-                .gte('created_at', startOfDay.toISOString())
-                .order('created_at', { ascending: true });
-
-            if (error || !data.length) return;
-
-            let totalMeters = 0;
-            let pathPoints = [];
-
-            for (let i = 0; i < data.length; i++) {
-                const current = data[i];
-                const [lat, lon] = current.coordinates.split(',').map(Number);
-                const currentLatLng = L.latLng(lat, lon);
-                pathPoints.push(currentLatLng);
-
-                if (i > 0) {
-                    const prev = data[i-1];
-                    const [pLat, pLon] = prev.coordinates.split(',').map(Number);
-                    const prevLatLng = L.latLng(pLat, pLon);
-                    
-                    const dist = prevLatLng.distanceTo(currentLatLng); // Distance in meters
-                    const timeDiff = (new Date(current.created_at) - new Date(prev.created_at)) / 1000 / 60; // Minutes
-
-                    totalMeters += dist;
-
-                    // Logic: Stationary if moved < 25m but took > 15 mins
-                    const color = (dist < 25 && timeDiff > 15) ? '#ff0000' : '#3388ff';
-                    const weight = (dist < 25 && timeDiff > 15) ? 6 : 4;
-
-                    L.polyline([prevLatLng, currentLatLng], { color: color, weight: weight }).addTo(currentRouteLayer);
-                }
-            }
-
-            const mileage = (totalMeters * 0.000621371).toFixed(2);
-            document.getElementById('routeInfo').innerHTML = `
-                <b>${driverName.toUpperCase()}</b><br>
-                Today's Distance: ${mileage} miles<br>
-                <small>(Red = Stationary > 15m)</small>
-            `;
-        }
-
-        async function updateLiveLocations() {
+        async function updateMap() {
             try {
-                const { data, error } = await _supabase
+                // 1. Get the absolute latest log for EVERY driver
+                // We fetch the last 100 logs to ensure we cover all active staff
+                const { data: logs, error: logErr } = await _supabase
+                    .from('fleet_logs')
+                    .select('driver_name, action_type, created_at')
+                    .order('created_at', { ascending: false })
+                    .limit(100);
+
+                if (logErr) throw logErr;
+
+                // 2. Identify who is currently "START" vs "END"
+                const driverStatus = {};
+                logs.forEach(log => {
+                    if (!driverStatus[log.driver_name]) {
+                        driverStatus[log.driver_name] = log.action_type;
+                    }
+                });
+
+                // Filter for only those who are "START" (Logged In)
+                const loggedInDrivers = Object.keys(driverStatus).filter(name => driverStatus[name] === 'START');
+
+                // 3. Get the latest location for EVERYONE from the last 24 hours
+                const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+                const { data: locations, error: locErr } = await _supabase
                     .from('vehicle_tracking')
                     .select('*')
+                    .gt('created_at', yesterday)
                     .order('created_at', { ascending: false });
 
-                if (error) throw error;
+                if (locErr) throw locErr;
 
-                const latestPositions = {};
-                data.forEach(row => {
-                    if (!latestPositions[row.driver_name]) {
-                        latestPositions[row.driver_name] = row;
+                // Group locations to get only the latest ping for each driver
+                const latestLocs = {};
+                locations.forEach(loc => {
+                    if (!latestLocs[loc.driver_name]) { latestLocs[loc.driver_name] = loc; }
+                });
+
+                // 4. THE FILTER: Only show marker if (Driver is Logged In) AND (We have a recent location)
+                const driversToShow = loggedInDrivers.filter(name => latestLocs[name]);
+
+                // Update Active Count UI
+                document.getElementById('activeCount').innerText = driversToShow.length;
+
+                // 5. Cleanup: Remove markers for anyone not in our "Logged In" list
+                Object.keys(markers).forEach(name => {
+                    if (!driversToShow.includes(name)) {
+                        map.removeLayer(markers[name]);
+                        delete markers[name];
                     }
                 });
 
-                Object.values(latestPositions).forEach(pos => {
-                    const [lat, lon] = pos.coordinates.split(',').map(Number);
-                    const name = pos.driver_name.toUpperCase();
-                    const time = new Date(pos.created_at).toLocaleTimeString();
-                    const info = `
-                        <b>Driver: ${name}</b><br>
-                        <b>Current Speed: ${pos.speed} MPH</b><br>
-                        Last Update: ${time}<br>
-                        <hr>
-                        <i>Click to view today's route</i>`;
+                // 6. Draw/Update Markers
+                driversToShow.forEach(name => {
+                    const data = latestLocs[name];
+                    const [lat, lon] = data.coordinates.split(',').map(Number);
+                    const time = new Date(data.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+                    
+                    const popup = `<b>${name.toUpperCase()}</b><br>Speed: ${data.speed} MPH<br>Updated: ${time}`;
 
                     if (markers[name]) {
-                        markers[name].setLatLng([lat, lon]).setPopupContent(info);
+                        markers[name].setLatLng([lat, lon]).setPopupContent(popup);
                     } else {
-                        markers[name] = L.marker([lat, lon]).addTo(map).bindPopup(info);
-                        // Add click listener for route
-                        markers[name].on('click', () => fetchDriverRoute(pos.driver_name));
+                        markers[name] = L.marker([lat, lon]).addTo(map).bindPopup(popup);
                     }
                 });
 
-                document.getElementById('lastUpdate').innerText = "Last sync: " + new Date().toLocaleTimeString();
+                document.getElementById('lastUpdate').innerText = new Date().toLocaleTimeString();
+
             } catch (e) {
-                console.error("Map Error:", e);
-                document.getElementById('lastUpdate').innerText = "Sync Failed";
+                console.error("Map refresh failed:", e);
             }
         }
 
-        // Run every 30 seconds
-        setInterval(updateLiveLocations, 30000);
-        updateLiveLocations();
+        setInterval(updateMap, 10000);
+        updateMap();
     </script>
 </body>
 </html>
