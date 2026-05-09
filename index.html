@@ -1,139 +1,211 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
+    <title>Frost Fleet Live Tracker</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Frost Fleet - Admin Live Map</title>
-    
-    <!-- Leaflet Maps CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <!-- Supabase JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    
     <style>
-        body { margin: 0; padding: 0; font-family: -apple-system, sans-serif; background: #121212; color: white; }
-        #map { height: 100vh; width: 100vw; }
+        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f4f4; }
+        #map { height: 100vh; width: 100%; }
         
-        /* Overlay UI */
-        .admin-panel {
-            position: absolute; top: 20px; left: 20px; z-index: 1000;
-            background: rgba(30, 30, 30, 0.9); padding: 20px;
-            border-radius: 12px; border: 1px solid #E62411;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-            max-width: 280px;
+        .overlay { 
+            position: absolute; top: 10px; right: 10px; z-index: 1000; 
+            background: white; padding: 15px; border-radius: 8px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            width: 220px;
         }
-        h1 { margin: 0 0 10px 0; font-size: 18px; color: #E62411; text-transform: uppercase; letter-spacing: 1px; }
-        .status { font-size: 12px; color: #b0b0b0; margin-bottom: 10px; }
-        #lastUpdate { font-weight: bold; color: #fff; }
+
+        h2 { margin: 0 0 5px 0; font-size: 18px; color: #E62411; border-bottom: 2px solid #E62411; padding-bottom: 5px; }
+        .status { font-size: 12px; color: #555; margin-bottom: 10px; }
         
-        .legend { font-size: 11px; margin-top: 10px; padding-top: 10px; border-top: 1px solid #444; }
-        .legend-item { display: flex; align-items: center; margin-bottom: 5px; }
-        .dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+        .info-panel { 
+            margin-top: 10px; 
+            font-size: 13px; 
+            padding-top: 10px;
+            border-top: 1px solid #ddd;
+        }
+
+        .stat-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+        .stat-label { font-weight: bold; color: #333; }
+        .stat-value { color: #E62411; font-weight: bold; }
         
-        /* Map Popup Styling */
-        .leaflet-popup-content-wrapper { background: #1e1e1e; color: #fff; border: 1px solid #444; }
-        .leaflet-popup-tip { background: #1e1e1e; }
+        .legend { font-size: 11px; color: #666; margin-top: 8px; font-style: italic; }
     </style>
 </head>
 <body>
 
-    <div class="admin-panel">
-        <h1>Frost Fleet Live</h1>
-        <div class="status">System Status: <span style="color:#27ae60">Active</span></div>
-        <div class="status">Updates: <span id="lastUpdate">Initializing...</span></div>
+    <div class="overlay">
+        <h2>Frost Fleet Live</h2>
+        <div id="lastUpdate" class="status">Connecting...</div>
         
-        <div class="legend">
-            <div class="legend-item"><span class="dot" style="background:#E62411"></span> Active Driver (< 4hrs)</div>
+        <div id="routeInfo" class="info-panel">
+            Select a driver to view daily stats.
         </div>
     </div>
-
+    
     <div id="map"></div>
 
     <script>
-        // --- CONFIGURATION ---
+        // --- CONFIG ---
         const SUPABASE_URL = "https://mbudwnwxucluwgbkgbfx.supabase.co"; 
         const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1idWR3bnd4dWNsdXdnYmtnYmZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyMDQwMjYsImV4cCI6MjA5MDc4MDAyNn0.xFv-FiQ894vdfJuQYWQyF4WzQXmlnmnKvz_c8nuzl5Q"; 
         const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
         // --- INITIALIZE MAP ---
-        const map = L.map('map').setView([52.9548, -1.1581], 7); // Centered on Nottingham/UK
-        
-        // Dark Mode Map Tiles
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-            attribution: '&copy; OpenStreetMap &copy; CARTO'
+        // Defaults to Warsop area
+        const map = L.map('map').setView([53.21, -1.11], 10); 
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
         }).addTo(map);
 
-        let markers = {}; // Object to store markers by driver name
+        let markers = {};
+        let currentRouteLayer = L.layerGroup().addTo(map);
 
-        // --- LIVE DATA LOGIC ---
+        // --- FUNCTIONS ---
+
+        /**
+         * Fetches all points for a driver since 00:01 today,
+         * calculates mileage, and draws the route with stationary highlights.
+         */
+        async function fetchDriverRoute(driverName) {
+            currentRouteLayer.clearLayers();
+            
+            const startOfDay = new Date();
+            startOfDay.setHours(0, 0, 1, 0); // Start at 00:01 AM
+
+            const { data, error } = await _supabase
+                .from('vehicle_tracking')
+                .select('*')
+                .eq('driver_name', driverName)
+                .gte('created_at', startOfDay.toISOString())
+                .order('created_at', { ascending: true });
+
+            if (error) {
+                console.error("Route Fetch Error:", error);
+                return;
+            }
+
+            if (!data || data.length === 0) {
+                document.getElementById('routeInfo').innerHTML = "No route data for today.";
+                return;
+            }
+
+            let totalMeters = 0;
+            
+            for (let i = 1; i < data.length; i++) {
+                const prev = data[i-1];
+                const curr = data[i];
+
+                const [pLat, pLon] = prev.coordinates.split(',').map(Number);
+                const [cLat, cLon] = curr.coordinates.split(',').map(Number);
+                
+                const pLatLng = L.latLng(pLat, pLon);
+                const cLatLng = L.latLng(cLat, cLon);
+
+                const dist = pLatLng.distanceTo(cLatLng);
+                const timeDiffMins = (new Date(curr.created_at) - new Date(prev.created_at)) / 1000 / 60;
+
+                totalMeters += dist;
+
+                // stationary logic: Moved less than 25m and took more than 15 mins
+                const isStationary = (dist < 25 && timeDiffMins > 15);
+                
+                L.polyline([pLatLng, cLatLng], {
+                    color: isStationary ? '#E62411' : '#3388ff',
+                    weight: isStationary ? 6 : 4,
+                    opacity: isStationary ? 0.9 : 0.7
+                }).addTo(currentRouteLayer);
+            }
+
+            const totalMiles = (totalMeters * 0.000621371).toFixed(2);
+            
+            document.getElementById('routeInfo').innerHTML = `
+                <div class="stat-row">
+                    <span class="stat-label">Driver:</span>
+                    <span class="stat-value">${driverName.toUpperCase()}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Daily Miles:</span>
+                    <span class="stat-value">${totalMiles} mi</span>
+                </div>
+                <div class="legend">Red segments = Stopped > 15m</div>
+            `;
+        }
+
+        /**
+         * Refreshes live locations, removes inactive drivers (>15m),
+         * and updates speed/position.
+         */
         async function updateLiveLocations() {
             try {
-                // 1. Calculate the "Stale" cutoff (4 hours ago)
-                const staleCutoff = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+                // Only fetch drivers who pinged in the last 15 minutes
+                const activeCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
 
-                // 2. Fetch recent pings from the last 4 hours
                 const { data, error } = await _supabase
                     .from('vehicle_tracking')
                     .select('*')
-                    .gt('created_at', staleCutoff)
+                    .gt('created_at', activeCutoff)
                     .order('created_at', { ascending: false });
 
                 if (error) throw error;
 
-                // 3. Group by driver to get ONLY their most recent position
                 const latestPositions = {};
+                const activeNames = new Set();
+
+                // Group by driver name to get only the most recent entry
                 data.forEach(row => {
-                    if (!latestPositions[row.driver_name]) {
-                        latestPositions[row.driver_name] = row;
+                    const nameKey = row.driver_name.toUpperCase();
+                    if (!latestPositions[nameKey]) {
+                        latestPositions[nameKey] = row;
+                        activeNames.add(nameKey);
                     }
                 });
 
-                const activeDriversInDB = Object.keys(latestPositions);
-
-                // 4. CLEANUP: Remove markers for drivers who are no longer active/stale
+                // Remove markers for drivers who have gone offline
                 Object.keys(markers).forEach(name => {
-                    if (!activeDriversInDB.includes(name)) {
+                    if (!activeNames.has(name)) {
                         map.removeLayer(markers[name]);
                         delete markers[name];
                     }
                 });
 
-                // 5. UPDATE/ADD: Place pins for all active drivers
-                activeDriversInDB.forEach(name => {
-                    const pos = latestPositions[name];
+                // Update or Create markers
+                Object.values(latestPositions).forEach(pos => {
                     const [lat, lon] = pos.coordinates.split(',').map(Number);
-                    const time = new Date(pos.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+                    const name = pos.driver_name.toUpperCase();
+                    const time = new Date(pos.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                     
-                    const popupHtml = `
-                        <div style="text-align:center">
-                            <strong style="color:#E62411; font-size:14px;">${name.toUpperCase()}</strong><br>
-                            <span style="font-size:11px; color:#aaa;">Speed: ${pos.speed} MPH</span><br>
-                            <span style="font-size:11px; color:#aaa;">Heading: ${pos.heading}°</span><br>
-                            <hr style="border:0; border-top:1px solid #444; margin:5px 0;">
-                            <span style="font-size:10px;">Last Active: ${time}</span>
+                    const popupContent = `
+                        <div style="font-family: sans-serif; line-height: 1.4;">
+                            <b style="color: #E62411; font-size: 14px;">${name}</b><br>
+                            <b>Speed: ${pos.speed} MPH</b><br>
+                            <span style="font-size: 11px; color: #666;">Last Ping: ${time}</span><br>
+                            <hr style="margin: 8px 0; border: 0; border-top: 1px solid #eee;">
+                            <span style="color: #3388ff; cursor: pointer;"><i>Click to view daily route</i></span>
                         </div>
                     `;
 
                     if (markers[name]) {
-                        // Update existing marker
-                        markers[name].setLatLng([lat, lon]).setPopupContent(popupHtml);
+                        markers[name].setLatLng([lat, lon]).setPopupContent(popupContent);
                     } else {
-                        // Create new marker
-                        markers[name] = L.marker([lat, lon]).addTo(map).bindPopup(popupHtml);
+                        markers[name] = L.marker([lat, lon]).addTo(map).bindPopup(popupContent);
+                        // Trigger route fetch on marker click
+                        markers[name].on('click', () => fetchDriverRoute(pos.driver_name));
                     }
                 });
 
-                document.getElementById('lastUpdate').innerText = new Date().toLocaleTimeString();
-            } catch (err) {
-                console.error("Map Sync Error:", err);
-                document.getElementById('lastUpdate').innerText = "Sync Error";
+                document.getElementById('lastUpdate').innerText = "Last sync: " + new Date().toLocaleTimeString();
+            } catch (e) {
+                console.error("Sync Error:", e);
+                document.getElementById('lastUpdate').innerText = "Sync Failed: Database error";
             }
         }
 
-        // --- START LIVE UPDATES ---
-        updateLiveLocations(); // Initial load
-        setInterval(updateLiveLocations, 10000); // Update every 10 seconds
-
+        // Run every 30 seconds
+        setInterval(updateLiveLocations, 30000);
+        updateLiveLocations();
     </script>
 </body>
 </html>
