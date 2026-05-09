@@ -7,31 +7,39 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
-        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f4f4; }
+        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f4f4; color: #333; }
         #map { height: 100vh; width: 100%; }
         
         .overlay { 
             position: absolute; top: 10px; right: 10px; z-index: 1000; 
             background: white; padding: 15px; border-radius: 8px; 
             box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-            width: 220px;
+            width: 240px;
         }
 
-        h2 { margin: 0 0 5px 0; font-size: 18px; color: #E62411; border-bottom: 2px solid #E62411; padding-bottom: 5px; }
-        .status { font-size: 12px; color: #555; margin-bottom: 10px; }
+        h2 { margin: 0 0 5px 0; font-size: 18px; color: #E62411; border-bottom: 2px solid #E62411; padding-bottom: 5px; text-transform: uppercase; letter-spacing: 1px;}
+        .status { font-size: 12px; color: #555; margin-bottom: 15px; }
         
-        .info-panel { 
-            margin-top: 10px; 
-            font-size: 13px; 
-            padding-top: 10px;
-            border-top: 1px solid #ddd;
+        .driver-list-header { font-size: 14px; font-weight: bold; margin-bottom: 8px; color: #333; }
+        #activeDriversList { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+        #activeDriversList li { 
+            padding: 6px 0; 
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
         }
-
-        .stat-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
-        .stat-label { font-weight: bold; color: #333; }
-        .stat-value { color: #E62411; font-weight: bold; }
+        #activeDriversList li:last-child { border-bottom: none; }
         
-        .legend { font-size: 11px; color: #666; margin-top: 8px; font-style: italic; }
+        /* Added hover effects for the clickable names */
+        .driver-name { color: #E62411; font-weight: bold; cursor: pointer; transition: all 0.2s ease; }
+        .driver-name:hover { color: #b31c0d; text-decoration: underline; }
+        
+        /* Light Theme Popup Customization */
+        .popup-title { color: #E62411; font-size: 15px; font-weight: bold; margin-bottom: 4px; text-transform: uppercase;}
+        .popup-row { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 13px; }
+        .popup-label { color: #666; }
+        .popup-val { font-weight: bold; color: #222;}
+        hr { border: 0; border-top: 1px solid #ddd; margin: 8px 0; }
     </style>
 </head>
 <body>
@@ -40,9 +48,10 @@
         <h2>Frost Fleet Live</h2>
         <div id="lastUpdate" class="status">Connecting...</div>
         
-        <div id="routeInfo" class="info-panel">
-            Select a driver to view daily stats.
-        </div>
+        <div class="driver-list-header">Active Shift Drivers</div>
+        <ul id="activeDriversList">
+            <li>Loading...</li>
+        </ul>
     </div>
     
     <div id="map"></div>
@@ -54,108 +63,46 @@
         const _supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
         // --- INITIALIZE MAP ---
-        // Defaults to Warsop area
         const map = L.map('map').setView([53.21, -1.11], 10); 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors'
         }).addTo(map);
 
         let markers = {};
-        let currentRouteLayer = L.layerGroup().addTo(map);
 
         // --- FUNCTIONS ---
-
-        /**
-         * Fetches all points for a driver since 00:01 today,
-         * calculates mileage, and draws the route with stationary highlights.
-         */
-        async function fetchDriverRoute(driverName) {
-            currentRouteLayer.clearLayers();
-            
-            const startOfDay = new Date();
-            startOfDay.setHours(0, 0, 1, 0); // Start at 00:01 AM
-
-            const { data, error } = await _supabase
-                .from('vehicle_tracking')
-                .select('*')
-                .eq('driver_name', driverName)
-                .gte('created_at', startOfDay.toISOString())
-                .order('created_at', { ascending: true });
-
-            if (error) {
-                console.error("Route Fetch Error:", error);
-                return;
-            }
-
-            if (!data || data.length === 0) {
-                document.getElementById('routeInfo').innerHTML = "No route data for today.";
-                return;
-            }
-
-            let totalMeters = 0;
-            
-            for (let i = 1; i < data.length; i++) {
-                const prev = data[i-1];
-                const curr = data[i];
-
-                const [pLat, pLon] = prev.coordinates.split(',').map(Number);
-                const [cLat, cLon] = curr.coordinates.split(',').map(Number);
-                
-                const pLatLng = L.latLng(pLat, pLon);
-                const cLatLng = L.latLng(cLat, cLon);
-
-                const dist = pLatLng.distanceTo(cLatLng);
-                const timeDiffMins = (new Date(curr.created_at) - new Date(prev.created_at)) / 1000 / 60;
-
-                totalMeters += dist;
-
-                // stationary logic: Moved less than 25m and took more than 15 mins
-                const isStationary = (dist < 25 && timeDiffMins > 15);
-                
-                L.polyline([pLatLng, cLatLng], {
-                    color: isStationary ? '#E62411' : '#3388ff',
-                    weight: isStationary ? 6 : 4,
-                    opacity: isStationary ? 0.9 : 0.7
-                }).addTo(currentRouteLayer);
-            }
-
-            const totalMiles = (totalMeters * 0.000621371).toFixed(2);
-            
-            document.getElementById('routeInfo').innerHTML = `
-                <div class="stat-row">
-                    <span class="stat-label">Driver:</span>
-                    <span class="stat-value">${driverName.toUpperCase()}</span>
-                </div>
-                <div class="stat-row">
-                    <span class="stat-label">Daily Miles:</span>
-                    <span class="stat-value">${totalMiles} mi</span>
-                </div>
-                <div class="legend">Red segments = Stopped > 15m</div>
-            `;
-        }
-
-        /**
-         * Refreshes live locations, removes inactive drivers (>15m),
-         * and updates speed/position.
-         */
         async function updateLiveLocations() {
             try {
-                // Only fetch drivers who pinged in the last 15 minutes
-                const activeCutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+                // Set a rolling "Shift Window" (18 hours)
+                // This covers long stops, breaks, and night shifts spanning across midnight.
+                const shiftWindowHours = 18; 
+                const shiftCutoff = new Date(Date.now() - shiftWindowHours * 60 * 60 * 1000).toISOString();
 
-                const { data, error } = await _supabase
-                    .from('vehicle_tracking')
-                    .select('*')
-                    .gt('created_at', activeCutoff)
-                    .order('created_at', { ascending: false });
+                // Fetch tracking, vehicle checks, and trailer checks using the unified shift cutoff
+                const [trackingRes, vehicleRes, trailerRes] = await Promise.all([
+                    _supabase.from('vehicle_tracking').select('*').gte('created_at', shiftCutoff).order('created_at', { ascending: false }),
+                    _supabase.from('daily_vehicle_checks').select('driver_name, registration').gte('created_at', shiftCutoff).order('created_at', { ascending: false }),
+                    _supabase.from('daily_trailer_checks').select('driver_name, trailer_number').gte('created_at', shiftCutoff).order('created_at', { ascending: false })
+                ]);
 
-                if (error) throw error;
+                if (trackingRes.error) throw trackingRes.error;
+
+                const latestVehicles = {};
+                vehicleRes.data?.forEach(row => {
+                    const name = row.driver_name.toUpperCase();
+                    if (!latestVehicles[name]) latestVehicles[name] = row.registration;
+                });
+
+                const latestTrailers = {};
+                trailerRes.data?.forEach(row => {
+                    const name = row.driver_name.toUpperCase();
+                    if (!latestTrailers[name]) latestTrailers[name] = row.trailer_number;
+                });
 
                 const latestPositions = {};
                 const activeNames = new Set();
 
-                // Group by driver name to get only the most recent entry
-                data.forEach(row => {
+                trackingRes.data.forEach(row => {
                     const nameKey = row.driver_name.toUpperCase();
                     if (!latestPositions[nameKey]) {
                         latestPositions[nameKey] = row;
@@ -163,7 +110,6 @@
                     }
                 });
 
-                // Remove markers for drivers who have gone offline
                 Object.keys(markers).forEach(name => {
                     if (!activeNames.has(name)) {
                         map.removeLayer(markers[name]);
@@ -171,19 +117,50 @@
                     }
                 });
 
-                // Update or Create markers
+                const listContainer = document.getElementById('activeDriversList');
+                listContainer.innerHTML = '';
+
+                if (activeNames.size === 0) {
+                    listContainer.innerHTML = '<li>No active drivers.</li>';
+                }
+
                 Object.values(latestPositions).forEach(pos => {
                     const [lat, lon] = pos.coordinates.split(',').map(Number);
                     const name = pos.driver_name.toUpperCase();
                     const time = new Date(pos.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                     
+                    const reg = latestVehicles[name] || 'N/A';
+                    const trailer = latestTrailers[name] || 'N/A';
+                    const direction = pos.heading ? `${pos.heading}°` : 'N/A'; 
+
+                    // Populate sidebar list with clickable name
+                    const li = document.createElement('li');
+                    li.innerHTML = `<span class="driver-name" title="Click to locate">${name}</span> <span>${pos.speed} MPH</span>`;
+                    
+                    // Add click event listener to the driver's name
+                    li.querySelector('.driver-name').addEventListener('click', () => {
+                        // Fly to the marker with a smooth animation and set zoom level to 16
+                        map.flyTo([lat, lon], 16, { duration: 1.5 });
+                        
+                        // Open the popup slightly after the flight starts
+                        if (markers[name]) {
+                            setTimeout(() => markers[name].openPopup(), 200);
+                        }
+                    });
+
+                    listContainer.appendChild(li);
+
+                    // Build Popup
                     const popupContent = `
-                        <div style="font-family: sans-serif; line-height: 1.4;">
-                            <b style="color: #E62411; font-size: 14px;">${name}</b><br>
-                            <b>Speed: ${pos.speed} MPH</b><br>
-                            <span style="font-size: 11px; color: #666;">Last Ping: ${time}</span><br>
-                            <hr style="margin: 8px 0; border: 0; border-top: 1px solid #eee;">
-                            <span style="color: #3388ff; cursor: pointer;"><i>Click to view daily route</i></span>
+                        <div style="font-family: sans-serif;">
+                            <div class="popup-title">${name}</div>
+                            <div class="popup-row"><span class="popup-label">Speed:</span> <span class="popup-val">${pos.speed} MPH</span></div>
+                            <div class="popup-row"><span class="popup-label">Heading:</span> <span class="popup-val">${direction}</span></div>
+                            <hr>
+                            <div class="popup-row"><span class="popup-label">Vehicle:</span> <span class="popup-val">${reg}</span></div>
+                            <div class="popup-row"><span class="popup-label">Trailer:</span> <span class="popup-val">${trailer}</span></div>
+                            <hr>
+                            <div style="font-size: 11px; color: #888; text-align: right;">Updated: ${time}</div>
                         </div>
                     `;
 
@@ -191,8 +168,6 @@
                         markers[name].setLatLng([lat, lon]).setPopupContent(popupContent);
                     } else {
                         markers[name] = L.marker([lat, lon]).addTo(map).bindPopup(popupContent);
-                        // Trigger route fetch on marker click
-                        markers[name].on('click', () => fetchDriverRoute(pos.driver_name));
                     }
                 });
 
