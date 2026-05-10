@@ -22,15 +22,16 @@
         
         .driver-list-header { font-size: 14px; font-weight: bold; margin-bottom: 8px; color: #333; }
         #activeDriversList { list-style: none; padding: 0; margin: 0; font-size: 13px; }
+        
+        /* Updated CSS for the List Items to support the drop-down details */
         #activeDriversList li { 
-            padding: 6px 0; 
+            padding: 8px 0; 
             border-bottom: 1px solid #eee;
-            display: flex;
-            justify-content: space-between;
+            display: block; 
         }
         #activeDriversList li:last-child { border-bottom: none; }
         
-        /* Added hover effects for the clickable names */
+        .driver-row { display: flex; justify-content: space-between; align-items: center; }
         .driver-name { color: #E62411; font-weight: bold; cursor: pointer; transition: all 0.2s ease; }
         .driver-name:hover { color: #b31c0d; text-decoration: underline; }
         
@@ -69,12 +70,15 @@
         }).addTo(map);
 
         let markers = {};
+        
+        // --- GLOBAL STATE ---
+        // Remembers which driver is clicked so details stay open during 30s auto-refresh
+        let selectedDriver = null; 
 
         // --- FUNCTIONS ---
         async function updateLiveLocations() {
             try {
                 // Set a rolling "Shift Window" (18 hours)
-                // This covers long stops, breaks, and night shifts spanning across midnight.
                 const shiftWindowHours = 18; 
                 const shiftCutoff = new Date(Date.now() - shiftWindowHours * 60 * 60 * 1000).toISOString();
 
@@ -132,17 +136,31 @@
                     const reg = latestVehicles[name] || 'N/A';
                     const trailer = latestTrailers[name] || 'N/A';
                     const direction = pos.heading ? `${pos.heading}°` : 'N/A'; 
-
-                    // Populate sidebar list with clickable name
-                    const li = document.createElement('li');
-                    li.innerHTML = `<span class="driver-name" title="Click to locate">${name}</span> <span>${pos.speed} MPH</span>`;
                     
-                    // Add click event listener to the driver's name
+                    // Create a safe ID string for the HTML elements (removes spaces/special chars)
+                    const safeId = name.replace(/[^a-zA-Z0-9]/g, '_');
+
+                    // Check if this driver is currently selected to keep their info visible
+                    const displayDetails = (selectedDriver === name) ? 'block' : 'none';
+
+                    // Populate sidebar list with the hidden details row
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <div class="driver-row">
+                            <span class="driver-name" title="Click to view details & locate">${name}</span> 
+                            <span>${pos.speed} MPH</span>
+                        </div>
+                        <div id="details-${safeId}" class="driver-details" style="display: ${displayDetails}; font-size: 11.5px; color: #444; margin-top: 6px; padding-top: 6px; border-top: 1px dashed #ddd;">
+                            <span style="color:#E62411; font-weight:bold;">Veh:</span> <span style="font-weight:bold; color:#111;">${reg}</span> 
+                            <span style="margin: 0 4px; color:#ccc;">|</span> 
+                            <span style="color:#E62411; font-weight:bold;">Trl:</span> <span style="font-weight:bold; color:#111;">${trailer}</span>
+                        </div>
+                    `;
+                    
+                    // Click listener for the sidebar list
                     li.querySelector('.driver-name').addEventListener('click', () => {
-                        // Fly to the marker with a smooth animation and set zoom level to 16
+                        // The marker popup event listener (below) will handle expanding the sidebar details automatically!
                         map.flyTo([lat, lon], 16, { duration: 1.5 });
-                        
-                        // Open the popup slightly after the flight starts
                         if (markers[name]) {
                             setTimeout(() => markers[name].openPopup(), 200);
                         }
@@ -164,10 +182,30 @@
                         </div>
                     `;
 
+                    // Update or Create Marker
                     if (markers[name]) {
                         markers[name].setLatLng([lat, lon]).setPopupContent(popupContent);
                     } else {
                         markers[name] = L.marker([lat, lon]).addTo(map).bindPopup(popupContent);
+                        
+                        // SYNC: When a map pin opens, update the state and expand the sidebar menu
+                        markers[name].on('popupopen', () => {
+                            selectedDriver = name;
+                            // Hide all detail divs
+                            document.querySelectorAll('.driver-details').forEach(el => el.style.display = 'none');
+                            // Show the selected one
+                            const detailEl = document.getElementById(`details-${safeId}`);
+                            if(detailEl) detailEl.style.display = 'block';
+                        });
+                        
+                        // SYNC: When a map pin closes, collapse the sidebar menu
+                        markers[name].on('popupclose', () => {
+                            if (selectedDriver === name) {
+                                selectedDriver = null;
+                                const detailEl = document.getElementById(`details-${safeId}`);
+                                if(detailEl) detailEl.style.display = 'none';
+                            }
+                        });
                     }
                 });
 
